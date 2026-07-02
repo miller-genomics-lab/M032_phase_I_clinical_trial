@@ -1,0 +1,162 @@
+---
+title: "Load Data"
+author: "Corinne Strawser"
+date: "2026-02-06"
+output: html_document
+---
+
+Patient       Sample 	                Section   Timepoint   Data
+Patient 18    NP-19-0036945_B1        B1 	      D0          /igm/projects/240320_GSL-KM-3829_KC_visium/count/B1/outs
+Patient 18    NP-20-0005714_F1 	      F1 	      D122        /igm/projects/240320_GSL-KM-3829_KC_visium/count/F1/outs
+Patient 22    NP-20-0025854_C1_Pre    C1        D0          /igm/projects/241014_GSL-LPRV-4138_Visium/counts/NP-20-0025854_C1_Pre/NP-20-0025854_C1_Pre/outs
+Patient 22    NP-20-003393_A1_Post    A1        D51         /igm/projects/250912_GSL-LPRV-4558_C134_M032/counts/NP-20-003393_A1/outs
+Patient 22    NP-20-0043174_D4_Post   D4        D119        /igm/projects/241014_GSL-LPRV-4138_Visium/counts/NP-20-0043174_D4_Post/NP-20-0043174_D4_Post/outs
+
+# load data from each sample and combine into a list
+```{r load_data}
+pt18_pre <-
+  Load10X_Spatial(data.dir = "/igm/projects/240320_GSL-KM-3829_KC_visium/count/B1/outs/",
+                  filename = "filtered_feature_bc_matrix.h5",
+                  slice = "oHSV_d0")
+pt18_post <-
+  Load10X_Spatial(data.dir = "/igm/projects/240320_GSL-KM-3829_KC_visium/count/F1/outs/",
+                  filename = "filtered_feature_bc_matrix.h5",
+                  slice = "oHSV_d122")
+pt22_pre <-
+  Load10X_Spatial(data.dir = "/igm/projects/241014_GSL-LPRV-4138_Visium/counts/NP-20-0025854_C1_Pre/NP-20-0025854_C1_Pre/outs",
+                  filename = "filtered_feature_bc_matrix.h5",
+                  slice = "oHSV_d0")
+pt22_post1 <-
+  Load10X_Spatial(data.dir = "/igm/projects/250912_GSL-LPRV-4558_C134_M032/counts/NP-20-003393_A1/outs",
+                  filename = "filtered_feature_bc_matrix.h5",
+                  slice = "oHSV_d51")
+pt22_post2 <-
+  Load10X_Spatial(data.dir = "/igm/projects/241014_GSL-LPRV-4138_Visium/counts/NP-20-0043174_D4_Post/NP-20-0043174_D4_Post/outs",
+                  filename = "filtered_feature_bc_matrix.h5",
+                  slice = "oHSV_d119")
+
+objs <-
+  list("pt18_pre" = pt18_pre,
+       "pt18_post" = pt18_post,
+       "pt22_pre" = pt22_pre,
+       "pt22_post1" = pt22_post1,
+       "pt22_post2" = pt22_post2)
+```
+
+# find percentage of mitochondrial genes and subset
+```{r subset_data}
+for (i in names(objs)){
+  objs[[i]]$orig.ident <- i
+  objs[[i]] <-
+    objs[[i]] %>%
+    PercentageFeatureSet(pattern = "^MT-",
+                         assay = "Spatial",
+                         col.name = "percent.mt") %>%
+    subset(nCount_Spatial > 0)
+  saveRDS(objs[[1]],
+          paste0(rdata, i, ".rds"))
+}
+```
+
+# analyze patient 18 and patient 22 independently, merging pre- and post-oHSV samples from each patient
+```{r}
+# make a list of the objects for each object
+patients <-
+  list("pt18" = list("oHSV_d0" = objs[["pt18_pre"]],
+                     "oHSV_d122" = objs[["pt18_post"]]),
+       "pt22" = list("oHSV_d0" = objs[["pt22_pre"]],
+                     "oHSV_d51" = objs[["pt22_post1"]],
+                     "oHSV_d119" = objs[["pt22_post2"]]))
+
+for (pt_name in names(patients)){
+  # pull out one patient
+  pt <-
+    patients[[pt_name]]
+  # normalize data, find variable features, scale data, and regress out mitochondrial genes
+  for (sample in names(pt)){
+    DefaultAssay(pt[[sample]]) <- "Spatial"
+    pt[[sample]] <-
+      pt[[sample]] %>%
+      NormalizeData() %>%
+      FindVariableFeatures() %>%
+      ScaleData(vars.to.regress = "percent.mt")
+  }
+  # pt <-
+  #   lapply(X = pt,
+  #          FUN = SCTransform,
+  #          vars.to.regress = "percent.mt",
+  #          assay = "Spatial",
+  #          return.only.var.genes = FALSE)
+  # merge the objects for the patient
+  spatial <-
+    merge(x = pt[[1]],
+          y = pt[2:length(pt)],
+          add.cell.ids = names(pt))
+  # get variable features for each sample for the patient and set them for the merged object
+  var_feats <-
+    SelectIntegrationFeatures(object = pt,
+                              nfeatures = 4000)
+  VariableFeatures(object = spatial) <- var_feats
+  # normalize and scale spatial slot
+  spatial <-
+    NormalizeData(object = spatial,
+                  assay = "Spatial") %>%
+    ScaleData(assay = "Spatial",
+              features = Features(spatial, 
+                                  assay = "Spatial"))
+  # normalize and scale protein slot
+  spatial <-
+    NormalizeData(object = spatial,
+                  assay = "Protein",
+                  normalization.method = "CLR") %>%
+    ScaleData(assay = "Protein",
+              features = Features(spatial, 
+                                  assay = "Protein"))
+  # perform dimensionality reduction and clustering on merged object
+  DefaultAssay(object = spatial) <- "Spatial"
+  spatial <- 
+    spatial %>%
+    RunPCA(assay = "Spatial",
+           npcs = 30) %>%
+    RunUMAP(dims = 1:30) %>%
+    FindNeighbors(k.parm = 30)
+  # make a umap to look at integration
+  DimPlot(object = spatial,
+          group.by = "orig.ident",
+          cols = c("red","blue","orange"))
+  ggsave(filename = paste0(fig, pt_name, "_merged_umap.jpeg"),
+         width = 6,
+         height = 5)
+  # save object
+  saveRDS(object = spatial,
+          file = paste0(output, "rdata/", pt_name, "_pre_and_post_merged_log.rds"))
+  # perform batch correction with harmony
+  harmony <- 
+    IntegrateLayers(object = spatial, 
+                    method = HarmonyIntegration, 
+                    normalization.method = "LogNormalize", 
+                    verbose = F) %>%
+    FindNeighbors(reduction = "harmony", 
+                  dims = 1:30) %>%
+    RunUMAP(dims = 1:30,
+            reduction = "harmony")
+  # make a umap to look at integration
+  DimPlot(object = harmony,
+          group.by = "orig.ident",
+          cols = c("red","blue","orange"))
+  ggsave(filename = paste0(fig, pt_name, "_harmony_umap.jpeg"),
+         width = 6,
+         height = 5)
+  # join layers
+  harmony[["Spatial"]] <- 
+    JoinLayers(harmony[["Spatial"]])
+  # save object
+  saveRDS(object = harmony,
+          file = paste0(output, "rdata/", pt_name, "_pre_and_post_merged_log_harmony.rds"))
+}
+
+# set final resolutions for each patient
+harmony <-
+  list("pt22" = readRDS(paste0(output, "rdata/pt22_pre_and_post_merged_log_harmony.rds")),
+       "pt18" = readRDS(paste0(output, "rdata/pt18_pre_and_post_merged_log_harmony.rds")))
+```
