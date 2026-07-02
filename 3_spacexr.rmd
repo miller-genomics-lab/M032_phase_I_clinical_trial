@@ -1,0 +1,566 @@
+---
+title: "deconvolution"
+author: "Corinne Strawser"
+date: "2025-05-19"
+output: html_document
+---
+
+```{r load_ref_data}
+# /igm/projects/240401_GSL-KM-3840_KC_flex/seurat/combine_with_gbmap/ohsv_pt_combine_with_gbmap.rmd
+ref <- 
+  readRDS("/igm/home/cnh008/ref/gbmap/2025_pub_and_mo32/merged_ohsv_gbmap_lognorm_harmony_with_manual_annotations.rds")
+
+harmony <-
+  list("pt22" = readRDS(paste0(output, "rdata/pt22_pre_and_post_merged_log_harmony.rds")),
+       "pt18" = readRDS(paste0(output, "rdata/pt18_pre_and_post_merged_log_harmony.rds")))
+```
+
+```{r}
+# make a reference umap
+DimPlot(object = ref,
+        group.by = c("dataset", "manual_annotation"),
+        shuffle = T,
+        alpha = 0.8,
+        label = T,
+        label.box = T,
+        repel = T) &
+  guides(color = "none")
+ggsave(paste0(fig,"deconvolution/reference_umaps.jpeg"),
+       width = 12,
+       height = 6)
+
+# make a heatmap of cell type markers
+Idents(ref) <- "manual_annotation"
+markers <-
+  FindAllMarkers(object = ref,
+                 only.pos = T,
+                 min.pct = 0.2,
+                 logfc.threshold = 0.25) %>%
+  group_by(cluster) 
+top_markers <-
+  markers %>%
+  filter(!str_detect(gene, pattern = "LINC")) %>%
+  arrange(desc(cluster)) %>%
+  group_by(cluster) %>%
+  slice_min(order_by = p_val_adj,
+            n = 20,
+            with_ties = T) %>%
+  slice_max(order_by = avg_log2FC,
+            n = 5,
+            with_ties = F) %>%
+  pull(gene)
+ref <-
+  ScaleData(object = ref,
+            features = top_markers)
+DoHeatmap(object = subset(ref,
+                          downsample = 500),
+          features = top_markers,
+          size = 4) &
+  guides(color = "none")
+ggsave(paste0(fig,"deconvolution/reference_marker_heatmap.jpeg"),
+       width = 10,
+       height = 14)
+
+# make a dot plot of cell type markers
+top_markers <-
+  markers %>%
+  filter(!str_detect(gene, pattern = "LINC")) %>%
+  group_by(cluster) %>%
+  slice_min(order_by = p_val_adj,
+            n = 20,
+            with_ties = T) %>%
+  slice_max(order_by = avg_log2FC,
+            n = 3,
+            with_ties = F) %>%
+  pull(gene) %>%
+  unique()
+ref@meta.data$EGFR <- NULL
+DotPlot(object = ref,
+        group.by = "manual_annotation",
+        features = top_markers) &
+  theme(axis.text.x = element_text(angle = 45, 
+                                   hjust = 1, 
+                                   vjust = 1)) &
+  scale_color_continuous(type = "viridis")
+ggsave(paste0(fig,"deconvolution/reference_marker_dotplot.jpeg"),
+       width = 20,
+       height = 7)
+```
+
+```{r spacexr_manual_annotation}
+# Create the Reference object
+spacexr_reference <-
+    spacexr::Reference(GetAssayData(ref, 
+                                    layer = "counts"),
+                       as.factor(ref$manual_annotation))
+
+sample_coords <-
+  list("pt22" = rbind(GetTissueCoordinates(harmony[["pt22"]], 
+                                           image = "oHSV_d0"),
+                      GetTissueCoordinates(harmony[["pt22"]], 
+                                           image = "oHSV_d51"),
+                      GetTissueCoordinates(harmony[["pt22"]], 
+                                           image = "oHSV_d119")) %>%
+         rename(x = imagerow,
+                y = imagecol),
+       "pt18" = rbind(GetTissueCoordinates(harmony[["pt18"]], 
+                                           image = "oHSV_d0"),
+                      GetTissueCoordinates(harmony[["pt18"]], 
+                                           image = "oHSV_d122")) %>%
+         rename(x = imagerow,
+                y = imagecol))
+
+for (pt_name in names(harmony)){
+  coords <- 
+    sample_coords[[pt_name]]
+  my_data <- 
+    spacexr::SpatialRNA(coords,
+                        GetAssayData(harmony[[pt_name]], 
+                                     layer = "counts",
+                                     assay = "Spatial"))
+  rctd_obj <- 
+    spacexr::create.RCTD(my_data, 
+                         spacexr_reference,
+                         CELL_MIN_INSTANCE = 1,
+                         fc_cutoff = 0.2,
+                         UMI_min = 10)
+  
+  rctd_out <- 
+    spacexr::run.RCTD(rctd_obj, 
+                      doublet_mode = "full")
+  
+  saveRDS(rctd_out, 
+          paste0(rdata, pt_name, "_pre_and_post_merged_log_harmony_rctd_out_manual_annotation.rds"))
+  
+  norm_weights <- 
+    spacexr::normalize_weights(rctd_out@results$weights)
+  
+  saveRDS(norm_weights, 
+          paste0(rdata, pt_name, "_pre_and_post_merged_log_harmony_rctd_out_manual_annotation_norm_weights.rds"))
+  
+  data_manual <- 
+    AddMetaData(harmony[[pt_name]], 
+                norm_weights)
+  
+  data_manual@meta.data[is.na(data_manual@meta.data)] <- 0
+  
+  saveRDS(data_manual, 
+          paste0(rdata, pt_name, "_pre_and_post_merged_log_harmony_deconvoluted_cell_manual_annotation.rds"))
+}
+```
+
+```{r}
+# read deconvoluted data back in
+harmony <-
+  list("pt22" = readRDS(paste0(output, "rdata/pt22_pre_and_post_merged_log_harmony_deconvoluted_cell_manual_annotation.rds")),
+       "pt18" = readRDS(paste0(output, "rdata/pt18_pre_and_post_merged_log_harmony_deconvoluted_cell_manual_annotation.rds")))
+```
+
+```{r}
+# add meta data about sample
+for (pt_name in names(harmony)){
+  pt <-
+    harmony[[pt_name]]
+  pt[["patient"]] <-
+    str_split_fixed(string = pt$orig.ident,
+                    pattern = "_",
+                    n = 2)[,1]
+  pt[["oHSV"]] <-
+    str_split_fixed(string = pt$orig.ident,
+                    pattern = "_",
+                    n = 2)[,2]
+  pt$oHSV <- 
+    ifelse(pt$oHSV == "pre",
+           "pre-oHSV", "post-oHSV")
+  pt[["timepoint"]] <-
+    str_split_fixed(string = pt$orig.ident,
+                    pattern = "_",
+                    n = 2)[,2] %>%
+    gsub(pattern = "pre",
+         replacement = "oHSV_d0", .) %>%
+    gsub(pattern = "post1",
+         replacement = "oHSV_d51", .) %>%
+    gsub(pattern = "post2",
+         replacement = "oHSV_d119", .) %>%
+    gsub(pattern = "post",
+         replacement = "oHSV_d122", .)
+  harmony[[pt_name]] <- pt
+  saveRDS(pt, 
+          paste0(rdata, pt_name, "_pre_and_post_merged_log_harmony_deconvoluted_cell_manual_annotation.rds"))  
+}
+```
+
+```{r}
+celltypes <-
+  unique(ref$manual_annotation)
+```
+
+```{r}
+# make some plots for Patient 18
+for (pt_name in "pt18"){
+  stats <- data.frame()
+  for (celltype in celltypes){
+    pre <-
+      harmony[[pt_name]]@meta.data[harmony[[pt_name]]@meta.data$oHSV == "pre-oHSV", celltype]
+    post <-
+      harmony[[pt_name]]@meta.data[harmony[[pt_name]]@meta.data$oHSV == "post-oHSV", celltype]
+    pval <-
+      wilcox.test(x = pre,
+                  y = post)
+    stats <- 
+      rbind(stats, c(celltype, mean(pre), mean(post), pval$p.value))
+  }
+  colnames(stats) <-
+    c("cell_type","pre_mean", "post_mean", "pval")
+  stats$FDR <-
+    p.adjust(stats$pval, "BH")
+  write.csv(stats,
+            paste0(fig, "deconvolution/",pt_name,"_pre_vs_post_deconvolution_stats.csv"),
+            row.names = F,
+            quote = F) 
+  for (celltype in celltypes){
+    celltype_stats <-
+      stats %>%
+      filter(cell_type == celltype) %>%
+      pivot_longer(cols = c("pre_mean", "post_mean"),
+                   names_to = "timepoint",
+                   values_to = "mean") %>%
+      mutate(mean = as.numeric(mean) %>%
+               round(digits = 3)) %>%
+      rename({{celltype}} := "cell_type")
+    VlnPlot(object = harmony[[pt_name]],
+            features = celltype,
+            cols = c("#476ba5","#D66363"),
+            group.by = "timepoint",
+            alpha = 0.2) &
+      stat_summary(fun = "mean",
+                   geom = "crossbar",
+                   width = 0.3,
+                   position = position_dodge(width = 0.9),
+                   linewidth = 0.5,
+                   show.legend = F) &
+      ggtitle(paste0(gsub(pattern = "pt",
+                          replacement = "Patient ",
+                          x = pt_name), 
+                     "\n",
+                     gsub(pattern = "_",
+                          replacement = " ",
+                          x = celltype))) &
+      ylab("Normalized Deconvolution Weight") &
+      xlab(NULL) &
+      guides(fill = "none") &
+      labs(caption = paste("FDR =", stats[stats$cell_type == celltype, "FDR"])) &
+      theme(axis.text.x = element_text(angle = 0,
+                                       hjust = 0.5),
+            plot.caption = element_text(hjust = 0.5),
+            plot.title = element_text(size = 14)) 
+    ggsave(paste0(fig,"deconvolution/",pt_name,"_", celltype,"_deconvolution_weight_vlnplot.jpeg"),
+           width = 7,
+           height = 6)
+    min <-
+      round(min(harmony[[pt_name]][[celltype]]), 2) + 0.01
+    max <-
+      round(max(harmony[[pt_name]][[celltype]]), 2) - 0.01
+    spatialplots <- list()
+    for (image in names(harmony[[pt_name]]@images)){
+      pt.size <- 
+        ifelse(test = pt_name == "pt22" & image == "oHSV_d0",
+               yes = 1.6, no = 3)
+      spatialplots[[image]] <-
+        SpatialFeaturePlot(object = subset(harmony[[pt_name]],
+                                           timepoint == image),
+                           features = celltype,
+                           min.cutoff = min,
+                           max.cutoff = max,
+                           images = image,
+                           pt.size.factor = ifelse(pt_name == "pt22", pt.size, 1.6)) &
+        labs(title = paste0(gsub("pt", "Patient ", pt_name),"\n",image)) &
+        scale_fill_gradientn(colours = rainbow,
+                             limits = c(0, max),
+                             na.value = rainbow[9],
+                             name = paste0(celltype, "\nMean Deconvolution\nWeight"),
+                             oob = scales::squish) &
+        theme(plot.title = element_text(hjust = 0.5))
+    }
+    wrap_plots(spatialplots) +
+      plot_layout(guides = "collect") & 
+      theme(legend.position = "right", 
+            legend.direction = "vertical")
+    ggsave(paste0(fig,"deconvolution/",pt_name,"_", celltype,"_deconvolution_weight_spatialplot.jpeg"),
+           width = 9,
+           height = 4.5)
+  }
+}
+
+for (pt_name in "pt18"){
+  # calculate cell type correlation in spots in pre- and post-oHSV samples
+  # pre-oHSV
+  pre <-
+    subset(harmony[[pt_name]], timepoint == "oHSV_d0")
+  pre_cell_data <-
+    pre@meta.data[,as.character(celltypes)]
+  
+  pre_cell_cor <-  
+    cor(pre_cell_data, 
+        method = "spearman")
+  
+  pre_cell_cor_df <-
+    pre_cell_cor %>%
+    as.data.frame() %>% 
+    rownames_to_column("celltype1") %>%
+    mutate(celltype1 = as.factor(celltype1)) %>%
+    pivot_longer(cols = -celltype1,
+                 values_to = "cor",
+                 names_to = "celltype2") %>%
+    as.data.frame() %>%
+    mutate(timepoint = "oHSV_d0")
+  
+  # Post-oHSV
+  post <-
+    subset(harmony[[pt_name]], timepoint == "oHSV_d122")
+  post_cell_data <-
+    post@meta.data[,as.character(celltypes)]
+  
+  post_cell_cor <-  
+    cor(post_cell_data, 
+        method = "spearman")
+  
+  post_cell_cor_df <-
+    post_cell_cor %>%
+    as.data.frame() %>% 
+    rownames_to_column("celltype1") %>%
+    mutate(celltype1 = as.factor(celltype1)) %>%
+    pivot_longer(cols = -celltype1,
+                 values_to = "cor",
+                 names_to = "celltype2") %>%
+    as.data.frame() %>%
+    mutate(timepoint = "oHSV_d122")
+  
+  cors <-
+    rbind(pre_cell_cor_df,
+          post_cell_cor_df)
+  cors %>%
+    filter(celltype1 != "TAM-BDM.1" &
+             celltype2 != "TAM-BDM.1") %>%
+    ggplot(aes(x = celltype1,
+               y = celltype2)) +
+    geom_tile(aes(fill = cor)) +
+    scale_fill_gradient2(low = "blue",
+                          high = "red",
+                          mid = "white",
+                          midpoint = 0,
+                          name = "Cell Type Correlation",
+                          limits = c(-1,1)) +
+    labs(x = NULL,
+         y = NULL) +
+    facet_wrap(~timepoint) +
+    theme_bw() +
+    scale_x_discrete(expand = c(0,0)) +
+    scale_y_discrete(expand = c(0,0)) +
+    theme(text = element_text(size = 12),
+          axis.text.x = element_text(angle = 45,
+                                     hjust = 1,
+                                     vjust = 1),
+          strip.background = element_rect(fill = "white"))
+  ggsave(filename = paste0(fig, "deconvolution/", pt_name, "_pre_vs_post_tumor_cell_cor.jpeg"),
+         width = 12,
+         height = 6)
+}
+```
+
+
+```{r}
+# make some plots for Patient 22
+for (pt_name in "pt22"){
+  stats <- data.frame()
+  for (celltype in celltypes){
+    ct <-
+      harmony[[pt_name]]@meta.data[,c("timepoint",celltype)]
+    colnames(ct) <- c("timepoint", "celltype")
+    anova <-
+      aov(data = ct,
+          formula = celltype ~ timepoint)
+    tukey <-
+      TukeyHSD(anova)$timepoint %>%
+      as.data.frame() %>%
+      rownames_to_column(var = "comparison") %>%
+      mutate("celltype" = celltype,
+             "pre_mean" = mean(ct[ct$timepoint == "oHSV_d0","celltype"]),
+             "post1_mean" = mean(ct[ct$timepoint == "oHSV_d51","celltype"]),
+             "post2_mean" = mean(ct[ct$timepoint == "oHSV_d119","celltype"]))
+    stats <- 
+      rbind(stats, tukey)
+  }
+  stats$FDR <-
+    p.adjust(stats[["p adj"]], "BH")
+  write.csv(stats,
+            paste0(fig, "deconvolution/",pt_name,"_pre_vs_post_deconvolution_stats.csv"),
+            row.names = F,
+            quote = F) 
+  for (celltype in celltypes){
+    VlnPlot(object = harmony[[pt_name]],
+            features = celltype,
+            cols = c("#476ba5","#DB9C9C","#D66363"),
+            group.by = "timepoint",
+            alpha = 0.2) &
+      stat_summary(fun = "mean",
+                   geom = "crossbar",
+                   width = 0.3,
+                   position = position_dodge(width = 0.9),
+                   linewidth = 0.5,
+                   show.legend = F) &
+      ggtitle(paste0(gsub(pattern = "pt",
+                          replacement = "Patient ",
+                          x = pt_name), 
+                     "\n",
+                     gsub(pattern = "_",
+                          replacement = " ",
+                          x = celltype))) &
+      ylab("Normalized Deconvolution Weight") &
+      xlab(NULL) &
+      guides(fill = "none") &
+      theme(axis.text.x = element_text(angle = 0,
+                                       hjust = 0.5),
+            plot.caption = element_text(hjust = 0.5),
+            plot.title = element_text(size = 14)) 
+    ggsave(paste0(fig,"deconvolution/",pt_name,"_", celltype,"_deconvolution_weight_vlnplot.jpeg"),
+           width = 7,
+           height = 6)
+    min <-
+      round(min(harmony[[pt_name]][[celltype]]), 2) + 0.01
+    max <-
+      round(max(harmony[[pt_name]][[celltype]]), 2) - 0.01
+    spatialplots <- list()
+    for (image in names(harmony[[pt_name]]@images)){
+      pt.size <- 
+        ifelse(test = pt_name == "pt22" & image == "oHSV_d0",
+               yes = 1.6, no = 3)
+      pt.size <- 
+        ifelse(test = pt_name == "pt22" & image == "oHSV_d0",
+               yes = 1.6, no = 3)
+      spatialplots[[image]] <-
+        SpatialFeaturePlot(object = subset(harmony[[pt_name]],
+                                           timepoint == image),
+                           features = celltype,
+                           min.cutoff = min,
+                           max.cutoff = max,
+                           images = image,
+                           pt.size.factor = ifelse(pt_name == "pt22", pt.size, 1.6)) &
+        labs(title = paste0(gsub("pt", "Patient ", pt_name),"\n",image)) &
+        scale_fill_gradientn(colours = rainbow,
+                             limits = c(0, max),
+                             na.value = rainbow[9],
+                             paste0(celltype, "\nMean Deconvolution\nWeight"),
+                             oob = scales::squish) &
+        theme(plot.title = element_text(hjust = 0.5))
+    }
+    wrap_plots(spatialplots) +
+      plot_layout(guides = "collect") & 
+      theme(legend.position = "right", 
+            legend.direction = "vertical")
+    ggsave(paste0(fig,"deconvolution/",pt_name,"_", celltype,"_deconvolution_weight_spatialplot.jpeg"),
+           width = 12,
+           height = 4.5)
+  }
+}
+
+for (pt_name in "pt22"){
+  # calculate cell type correlation in spots in pre- and post-oHSV samples
+  # pre-oHSV
+  pre <-
+    subset(harmony[[pt_name]], timepoint == "oHSV_d0")
+  pre_cell_data <-
+    pre@meta.data[,as.character(celltypes)]
+  
+  pre_cell_cor <-  
+    cor(pre_cell_data, 
+        method = "spearman")
+  
+  pre_cell_cor_df <-
+    pre_cell_cor %>%
+    as.data.frame() %>% 
+    rownames_to_column("celltype1") %>%
+    mutate(celltype1 = as.factor(celltype1)) %>%
+    pivot_longer(cols = -celltype1,
+                 values_to = "cor",
+                 names_to = "celltype2") %>%
+    as.data.frame() %>%
+    mutate(timepoint = "oHSV_d0")
+  
+  # Post-oHSV
+  post1 <-
+    subset(harmony[[pt_name]], timepoint == "oHSV_d51")
+  post1_cell_data <-
+    post1@meta.data[,as.character(celltypes)]
+  
+  post1_cell_cor <-  
+    cor(post1_cell_data, 
+        method = "spearman")
+  
+  post1_cell_cor_df <-
+    post1_cell_cor %>%
+    as.data.frame() %>% 
+    rownames_to_column("celltype1") %>%
+    mutate(celltype1 = as.factor(celltype1)) %>%
+    pivot_longer(cols = -celltype1,
+                 values_to = "cor",
+                 names_to = "celltype2") %>%
+    as.data.frame() %>%
+    mutate(timepoint = "oHSV_d51")
+  
+  # Post-oHSV
+  post2 <-
+    subset(harmony[[pt_name]], timepoint == "oHSV_d119")
+  post2_cell_data <-
+    post2@meta.data[,as.character(celltypes)]
+  
+  post2_cell_cor <-  
+    cor(post2_cell_data, 
+        method = "spearman")
+  
+  post2_cell_cor_df <-
+    post2_cell_cor %>%
+    as.data.frame() %>% 
+    rownames_to_column("celltype1") %>%
+    mutate(celltype1 = as.factor(celltype1)) %>%
+    pivot_longer(cols = -celltype1,
+                 values_to = "cor",
+                 names_to = "celltype2") %>%
+    as.data.frame() %>%
+    mutate(timepoint = "oHSV_d119")
+  
+  cors <-
+    rbind(pre_cell_cor_df,
+          post1_cell_cor_df,
+          post2_cell_cor_df)
+  cors$timepoint <-
+    factor(cors$timepoint,
+           levels = c("oHSV_d0","oHSV_d51","oHSV_d119"))
+  cors %>%
+    filter(celltype1 != "TAM-BDM.1" &
+             celltype2 != "TAM-BDM.1") %>%
+    ggplot(aes(x = celltype1,
+               y = celltype2)) +
+    geom_tile(aes(fill = cor)) +
+    scale_fill_gradient2(low = "blue",
+                          high = "red",
+                          mid = "white",
+                          midpoint = 0,
+                          name = "Cell Type Correlation",
+                          limits = c(-1,1)) +
+    labs(x = NULL,
+         y = NULL) +
+    facet_wrap(~timepoint) +
+    theme_bw() +
+    scale_x_discrete(expand = c(0,0)) +
+    scale_y_discrete(expand = c(0,0)) +
+    theme(text = element_text(size = 12),
+          axis.text.x = element_text(angle = 45,
+                                     hjust = 1,
+                                     vjust = 1),
+          strip.background = element_rect(fill = "white"))
+  ggsave(filename = paste0(fig, "deconvolution/", pt_name, "_pre_vs_post_tumor_cell_cor.jpeg"),
+         width = 18,
+         height = 6)
+}
+```

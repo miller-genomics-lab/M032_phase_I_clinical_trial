@@ -1,0 +1,1038 @@
+---
+title: "flex.rmd"
+author: "Corinne Strawser"
+date: "2025-05-22"
+output: html_document
+---
+
+```{r}
+# data were initially analyzed in this notebook: ~/projects/ohsv/mo32/scripts/build_reference.rmd
+# read in post-qc data
+files <-
+  list.files(path = "~/projects/ohsv/mo32/output/rdata/",
+             pattern = "postqc.rds",
+             full.names = T)
+names(files) <-
+  basename(files) %>%
+  gsub(pattern = "flex_",
+       replacement = "",
+       x = .) %>%
+  gsub(pattern = "_Post_postqc.rds",
+       replacement = "_Post-oHSV",
+       x = .) %>%
+  gsub(pattern = "_Post2_postqc.rds",
+       replacement = "_Post-oHSV",
+       x = .) %>%
+  gsub(pattern = "_Pre_postqc.rds",
+       replacement = "_Pre-oHSV",
+       x = .)
+flex <-
+  lapply(X = files,
+         FUN = readRDS)
+```
+
+```{r}
+# process Patient 22 scRNA-seq data
+Patient_22 <-
+  flex[["Patient_22_Post-oHSV"]]
+Patient_22 <-
+  Patient_22 %>%
+  NormalizeData() %>%
+  FindVariableFeatures() %>%
+  ScaleData(vars.to.regress = "percent.mt") %>%
+  RunPCA() %>%
+  FindNeighbors() %>%
+  RunUMAP(dims = 1:30,
+          reduction = "pca") %>%
+  FindClusters(res = seq(from = 0.1, 
+                         to = 1, 
+                         by = 0.1))
+clustree(Patient_22)
+ggsave(paste0(fig,"flex/pt22_clustree.jpeg"),
+       width = 8,
+       height = 10)
+for (res in seq(from = 0.1, to = 1, by = 0.1)){
+  Idents(Patient_22) <- 
+    paste0("RNA_snn_res.",res)
+  DimPlot(Patient_22,
+          cols = colors,
+          label = T,
+          label.box = T,
+          repel = T)
+  ggsave(paste0(fig,"flex/pt22_res",res,".jpeg"),
+         width = 6,
+         height = 4)
+  markers <-
+    FindAllMarkers(Patient_22,
+                   only.pos = T,
+                   min.pct = 0.2,
+                   logfc.threshold = 0.25) %>%
+    group_by(cluster) %>%
+    slice_min(order_by = p_val_adj,
+              n = 20,
+              with_ties = T) %>%
+    slice_max(order_by = avg_log2FC,
+              n = 5,
+              with_ties = F) %>%
+    pull(gene)
+  Patient_22 <-
+    ScaleData(object = Patient_22,
+              features = markers)
+  DoHeatmap(object = subset(Patient_22,
+                            downsample = 500),
+            features = markers,
+            size = 4) &
+    guides(color = "none")
+  ggsave(paste0(fig,"flex/pt22_res",res,"_marker_heatmap.jpeg"),
+         width = 10,
+         height = 14)
+}
+
+# annotate patient 22 with GBmap reference
+ref <- 
+  readRDS("/igm/home/cnh008/ref/gbmap/2025_pub_and_mo32/merged_ohsv_gbmap_lognorm_harmony_with_manual_annotations.rds")
+ref <-
+  subset(ref,dataset != "mo32")
+# annotate ohsv data with gbmap data (manual annotations)
+anchors <- 
+  FindTransferAnchors(reference = ref, 
+                      query = Patient_22, 
+                      dims = 1:30,
+                      reference.reduction = "pca")
+predictions <- 
+  TransferData(anchorset = anchors, 
+               refdata = ref$manual_annotation,
+               dims = 1:30)
+Patient_22$gbmap_manual_annotation <- 
+  predictions$predicted.id
+DimPlot(object = Patient_22,
+        group.by = "gbmap_manual_annotation",
+        cols = colors)
+# annotate ohsv data with gbmap data (manual annotations v2)
+predictions <- 
+  TransferData(anchorset = anchors, 
+               refdata = ref$manual_annotation_v2,
+               dims = 1:30)
+Patient_22$gbmap_manual_annotation_v2 <- 
+  predictions$predicted.id
+DimPlot(object = Patient_22,
+        group.by = "gbmap_manual_annotation_v2",
+        cols = colors)
+
+# set resolution for clustering at 0.4
+Patient_22 <-
+  Patient_22 %>%
+  FindClusters(res = 0.4)
+
+# plot clusters and cell types
+p1 <-
+  DimPlot(object = Patient_22,
+          group.by = c("seurat_clusters"),
+          cols = colors,
+          label = T,
+          label.box = T,
+          repel = T) &
+  ggtitle("Clusters") &
+  guides(color = "none")
+p2 <-
+  DimPlot(object = Patient_22,
+          group.by = c("gbmap_manual_annotation"),
+          cols = colors) &
+  ggtitle("GBmap Annotation")
+p1 + p2
+ggsave(filename = paste0(fig,"flex/pt22_umaps.jpeg"),
+       width = 11,
+       height = 4.5)
+
+# annotate clusters
+Idents(Patient_22) <-
+  "seurat_clusters"
+cluster_ids <-
+  c("0" = "Monocyte",
+    "1" = "Mural cell",
+    "2" = "Mural cell",
+    "3" = "Mural cell",
+    "4" = "MES-like",
+    "5" = "Mural cell",
+    "6" = "Endothelial",
+    "7" = "TAM-BDM",
+    "8" = "CD8",
+    "9" = "Mural cell",
+    "10" = "Monocyte",
+    "11" = "Prolif T",
+    "12" = "Mast")
+Patient_22 <-
+  RenameIdents(object = Patient_22,
+              cluster_ids)
+Patient_22$cell_type <-
+  Idents(Patient_22)
+DimPlot(object = Patient_22,
+        group.by = c("seurat_clusters",
+                     "cell_type"))
+Patient_22$cluster_cell_type <-
+  paste("Cluster", Patient_22$seurat_clusters, Patient_22$cell_type)
+Patient_22$cluster_cell_type <-
+  factor(Patient_22$cluster_cell_type,
+         levels = c("Cluster 0 Monocyte" ,
+                    "Cluster 1 Mural cell",
+                    "Cluster 2 Mural cell",
+                    "Cluster 3 Mural cell",
+                    "Cluster 4 MES-like",
+                    "Cluster 5 Mural cell",
+                    "Cluster 6 Endothelial",
+                    "Cluster 7 TAM-BDM",
+                    "Cluster 8 CD8",
+                    "Cluster 9 Mural cell",
+                    "Cluster 10 Monocyte",
+                    "Cluster 11 Prolif T",
+                    "Cluster 12 Mast"))
+
+# save object
+saveRDS(object = Patient_22,
+        file = paste0(rdata, "pt22_flex_annotated.rds"))
+
+# make a dot plot of top 3 marker genes
+Idents(Patient_22) <- "cluster_cell_type"
+markers <-
+  FindAllMarkers(object = Patient_22,
+                 only.pos = T,
+                 min.pct = 0.2,
+                 logfc.threshold = 0.25)
+write.csv(markers,
+          paste0(de, "pt22_flex_markers.csv"),
+          quote = F,
+          row.names = F)
+top_markers <-
+  markers %>%
+  group_by(cluster) %>%
+  slice_min(order_by = p_val_adj,
+            n = 25,
+            with_ties = T) %>%
+  slice_max(order_by = avg_log2FC,
+            n = 3,
+            with_ties = F) %>%
+  pull(gene) %>%
+  unique()
+DotPlot(object = Patient_22,
+        group.by = "cluster_cell_type",
+        features = top_markers) &
+  scale_color_continuous(type = "viridis") &
+  theme(axis.text.x = element_text(angle = 45,
+                                   hjust = 1,
+                                   vjust = 1))
+ggsave(filename = paste0(fig,"flex/pt22_cluster_markers_dotplot.jpeg"),
+       width = 15,
+       height = 6)
+```
+
+```{r}
+# process Patient 18 scRNA-seq data
+Patient_18 <-
+  merge(flex[["Patient_18_Pre-oHSV"]],
+        flex[["Patient_18_Post-oHSV"]])
+Patient_18 <-
+  Patient_18 %>%
+  NormalizeData() %>%
+  FindVariableFeatures() %>%
+  ScaleData(vars.to.regress = "percent.mt") %>%
+  RunPCA() %>%
+  FindNeighbors() %>%
+  RunUMAP(dims = 1:30,
+          reduction = "pca") %>%
+  FindClusters(res = seq(from = 0.1, 
+                         to = 1, 
+                         by = 0.1))
+DimPlot(object = Patient_18,
+        group.by = "orig.ident") &
+  ggtitle("Merged")
+ggsave(paste0(fig,"flex/pt18_merged_umap.jpeg"),
+       width = 6,
+       height = 4)
+# perform batch correction with harmony
+Patient_18 <- 
+  IntegrateLayers(object = Patient_18, 
+                  method = HarmonyIntegration, 
+                  normalization.method = "LogNormalize",
+                  verbose = F) %>%
+  FindNeighbors(reduction = "harmony", 
+                dims = 1:30) %>%
+  FindClusters(res = seq(0.1,1, by = 0.1)) %>%
+  RunUMAP(dims = 1:30,
+          reduction = "harmony")
+
+# make umap
+DimPlot(object = Patient_18,
+        group.by = "orig.ident") &
+  ggtitle("Harmony")
+ggsave(paste0(fig,"flex/pt18_harmony_umap.jpeg"),
+       width = 6,
+       height = 4)
+# make clustree
+clustree(x = Patient_18)
+ggsave(filename = paste0(fig, "pt18_harmony_clustree.jpeg"),
+       width = 8,
+       height = 10)
+Patient_18 <- 
+  JoinLayers(object = Patient_18) 
+for (res in seq(from = 0.1, to = 1, by = 0.1)){
+  Idents(Patient_18) <- 
+    paste0("RNA_snn_res.",res)
+  DimPlot(Patient_18,
+          cols = colors,
+          label = T,
+          label.box = T,
+          repel = T)
+  ggsave(paste0(fig,"flex/pt18_res",res,".jpeg"),
+         width = 6,
+         height = 4)
+  markers <-
+    FindAllMarkers(Patient_18,
+                   only.pos = T,
+                   min.pct = 0.2,
+                   logfc.threshold = 0.25) %>%
+    group_by(cluster) %>%
+    slice_min(order_by = p_val_adj,
+              n = 20,
+              with_ties = T) %>%
+    slice_max(order_by = avg_log2FC,
+              n = 5,
+              with_ties = F) %>%
+    pull(gene)
+  Patient_18 <-
+    ScaleData(object = Patient_18,
+              features = markers)
+  DoHeatmap(object = subset(Patient_18,
+                            downsample = 500),
+            features = markers,
+            size = 4) &
+    guides(color = "none")
+  ggsave(paste0(fig,"flex/pt18_res",res,"_marker_heatmap.jpeg"),
+         width = 10,
+         height = 14)
+  }
+# annotate patient 22 with GBmap reference
+ref <- 
+  readRDS("/igm/home/cnh008/ref/gbmap/2025_pub_and_mo32/merged_ohsv_gbmap_lognorm_harmony_with_manual_annotations.rds")
+ref <-
+  subset(ref,dataset != "mo32")
+# annotate ohsv data with gbmap data (manual annotations)
+anchors <- 
+  FindTransferAnchors(reference = ref, 
+                      query = Patient_18, 
+                      dims = 1:30,
+                      reference.reduction = "pca")
+predictions <- 
+  TransferData(anchorset = anchors, 
+               refdata = ref$manual_annotation,
+               dims = 1:30)
+Patient_18$gbmap_manual_annotation <- 
+  predictions$predicted.id
+DimPlot(object = Patient_18,
+        group.by = "gbmap_manual_annotation",
+        cols = colors)
+# annotate ohsv data with gbmap data (manual annotations v2)
+predictions <- 
+  TransferData(anchorset = anchors, 
+               refdata = ref$manual_annotation_v2,
+               dims = 1:30)
+Patient_18$gbmap_manual_annotation_v2 <- 
+  predictions$predicted.id
+DimPlot(object = Patient_18,
+        group.by = "gbmap_manual_annotation_v2",
+        cols = colors)
+
+# set resolution for clustering at 0.6
+Patient_18 <-
+  Patient_18 %>%
+  FindClusters(res = 0.6)
+
+# plot clusters and cell types
+p1 <-
+  DimPlot(object = Patient_18,
+          group.by = c("seurat_clusters"),
+          cols = colors,
+          label = T,
+          label.box = T,
+          repel = T,
+          shuffle = T) &
+  ggtitle("Clusters") &
+  guides(color = "none")
+p2 <-
+  DimPlot(object = Patient_18,
+          group.by = c("gbmap_manual_annotation"),
+          cols = colors,
+          shuffle = T) &
+  ggtitle("GBmap Annotation")
+p1 + p2
+ggsave(filename = paste0(fig,"flex/pt18_umaps.jpeg"),
+       width = 11,
+       height = 4.5)
+
+# annotate clusters
+Idents(Patient_18) <- "seurat_clusters"
+cluster_ids <-
+  c("0" = "OPC-like and NPC-like",
+    "1" = "NPC-like",
+    "2" = "Oligodendrocyte",
+    "3" = "Monocyte and TAM-MG",
+    "4" = "OPC-like and NPC-like",
+    "5" = "Unknown",
+    "6" = "OPC-like and NPC-like",
+    "7" = "OPC-like and NPC-like",
+    "8" = "AC-like",
+    "9" = "Astrocyte",
+    "10" = "Endothelial and Mural",
+    "11" = "Oligodendrocyte",
+    "12" = "CD8")
+Patient_18 <-
+  RenameIdents(object = Patient_18,
+              cluster_ids)
+Patient_18$cell_type <-
+  Idents(Patient_18)
+DimPlot(object = Patient_18,
+        group.by = c("seurat_clusters",
+                     "cell_type"))
+Patient_18$cluster_cell_type <-
+  paste("Cluster", Patient_18$seurat_clusters, Patient_18$cell_type)
+Patient_18$cluster_cell_type <-
+  factor(Patient_18$cluster_cell_type,
+         levels = c("Cluster 0 OPC-like and NPC-like",
+                    "Cluster 1 NPC-like",
+                    "Cluster 2 Oligodendrocyte",
+                    "Cluster 3 Monocyte and TAM-MG",
+                    "Cluster 4 OPC-like and NPC-like",
+                    "Cluster 5 Unknown",
+                    "Cluster 6 OPC-like and NPC-like",
+                    "Cluster 7 OPC-like and NPC-like",
+                    "Cluster 8 AC-like",
+                    "Cluster 9 Astrocyte",
+                    "Cluster 10 Endothelial and Mural",
+                    "Cluster 11 Oligodendrocyte",
+                    "Cluster 12 CD8"))
+Patient_18$timepoint <-
+  ifelse(str_detect(string = Patient_18$orig.ident,
+                    pattern = "Pre"),
+         "Pre-oHSV", "Post-oHSV") %>%
+  factor(levels = c("Pre-oHSV", "Post-oHSV"))
+saveRDS(object = Patient_18,
+        file = paste0(rdata, "pt18_flex_harmony_annotated.rds"))
+
+# make a dot plot of top 3 marker genes
+Idents(Patient_18) <- "cluster_cell_type"
+markers <-
+  FindAllMarkers(object = Patient_18,
+                 only.pos = T,
+                 min.pct = 0.2,
+                 logfc.threshold = 0.25)
+write.csv(markers,
+          paste0(de, "pt18_flex_markers.csv"),
+          quote = F,
+          row.names = F)
+top_markers <-
+  markers %>%
+  group_by(cluster) %>%
+  slice_min(order_by = p_val_adj,
+            n = 25,
+            with_ties = T) %>%
+  slice_max(order_by = avg_log2FC,
+            n = 3,
+            with_ties = F) %>%
+  pull(gene) %>%
+  unique()
+DotPlot(object = Patient_18,
+        group.by = "cluster_cell_type",
+        features = top_markers) &
+  scale_color_continuous(type = "viridis") &
+  theme(axis.text.x = element_text(angle = 45,
+                                   hjust = 1,
+                                   vjust = 1))
+ggsave(filename = paste0(fig,"flex/pt18_cluster_markers_dotplot.jpeg"),
+       width = 15,
+       height = 6)
+
+# make a plot of the number of cells per sample per cluster
+table(Patient_18$timepoint,
+      Patient_18$cluster_cell_type) %>%
+  as.data.frame() %>%
+  rename("timepoint" = "Var1",
+         "cluster_cell_type" = "Var2",
+         "cells" = "Freq") %>%
+  ggplot(aes(x = cells,
+             y = cluster_cell_type,
+             fill = timepoint)) +
+  geom_col(position = position_dodge(width = 1)) +
+  geom_text(aes(label = cells),
+            position = position_jitterdodge(dodge.width = 1,
+                                            jitter.width = -1,
+                                            jitter.height = 0.5),
+            hjust = 1.2) +
+  xlab("# Cells") +
+  ylab("Cluster") +
+  scale_fill_manual(values = Treatments,
+                    name = "Timepoint") +
+  theme_bw() +
+  scale_x_continuous(expand = c(0,NA)) +
+  ggtitle("Cells Per Cluster Per Timepoint") +
+  theme(plot.title = element_text(hjust = 0.5,
+                                  face = "bold"))
+ggsave(filename = paste0(fig,"flex/pt18_cells_per_cluster_per_timepoint_barplot.jpeg"),
+       width = 10,
+       height = 7)
+
+# do DEG analysis per cluster and celltype
+all_degs <- data.frame()
+for (cluster in unique(Patient_18$cluster_cell_type)){
+  Idents(Patient_18) <- "cluster_cell_type"
+  cluster_degs <-
+    FindMarkers(Patient_18,
+                ident.1 = "Post-oHSV",
+                ident.2 = "Pre-oHSV",
+                group.by = "timepoint",
+                subset.ident = as.character(cluster)) %>%
+    rownames_to_column(var = "gene") %>%
+    mutate("cluster" = cluster,
+           "Ident1" = "Post-oHSV",
+           "Ident2" = "Pre-oHSV")
+  all_degs <-
+    rbind(all_degs,
+          cluster_degs)
+}
+all_degs$FDR <-
+  p.adjust(p = all_degs$p_val) 
+write.csv(all_degs,
+          paste0(de, "pt18_flex_post_vs_pre_oHSV_degs.csv"),
+          quote = F,
+          row.names = F)
+Patient_18$cluster_cell_type_treatment <-
+  paste(Patient_18$cluster_cell_type,
+        Patient_18$timepoint)
+for (celltype in levels(Patient_18$cluster_cell_type)){
+  top_degs <-
+    all_degs %>%
+    filter(cluster == as.character(celltype) &
+             FDR <= 0.05) %>%
+    slice_max(order_by = abs(avg_log2FC),
+              n = 25,
+              with_ties = F) %>%
+    pull(gene)
+  DotPlot(object = subset(Patient_18,
+                          cluster_cell_type == celltype),
+          features = top_degs,
+          group.by = "timepoint",
+          scale = F,
+          col.min = 0) &
+    scale_color_continuous(type = "viridis",
+                           limits = c(0,NA)) &
+    coord_flip() &
+    ggtitle(celltype) &
+    theme(plot.title = element_text(hjust = 0.5))
+  ggsave(paste0(de, "pt18_flex_post_vs_pre_oHSV_", gsub(" ", "_", celltype),"_degs.jpeg"),
+         width = 6,
+         height = 7)
+}
+# plot number of degs per cluster
+sig_degs <-
+  all_degs %>%
+  filter(FDR <= 0.05) %>%
+  mutate(logFC = ifelse(avg_log2FC > 0,
+                        "upregulated",
+                        "downregulated"))
+deg_summary <- 
+  table(sig_degs$logFC, 
+      sig_degs$cluster) %>%
+  as.data.frame() %>%
+  rename("logFC" = "Var1",
+         "cluster" = "Var2") 
+deg_summary %>%
+  ggplot(aes(x = Freq,
+             y = cluster,
+             fill = logFC)) +
+  geom_col() +
+  geom_text(data = deg_summary[deg_summary$Freq != 0,],
+            aes(label = Freq),
+            hjust = 0) +
+  scale_x_continuous(limits = c(0,210),
+                     expand = c(0,0)) +
+  scale_fill_manual(values = c("downregulated" = "#45b39d",
+                                "upregulated" = "#ec7063"),
+                     name = "log2FC Direction") +
+  theme_bw() +
+  xlab("# DEGs (FDR < 0.05)") +
+  ylab("Cluster") +
+  ggtitle("Patient 18") +
+  theme(plot.title = element_text(hjust = 0.5,
+                                  face = "bold"),
+        legend.position = "bottom",
+        legend.direction = "horizontal",
+        legend.title.position = "top",
+        legend.title = element_text(hjust = 0.5))
+ggsave(paste0(de, "pt18_deg_quantification_barplot.jpeg"),
+       width = 7,
+       height = 5)
+
+# Look at expression of TRAIL pathway genes in each cell type
+c5_trail <-
+  msigdbr(species = "Homo sapiens",
+          category = "C5") %>%
+  dplyr::select(gs_name, gene_symbol) %>%
+  filter(str_detect(string = gs_name,
+                    pattern = "_TRAIL_"))
+c2_trail <-
+  msigdbr(species = "Homo sapiens",
+          category = "C2") %>%
+  dplyr::select(gs_name, gene_symbol) %>%
+  filter(str_detect(string = gs_name,
+                    pattern = "_TRAIL_"))
+trail_sets <-
+  rbind(c5_trail,
+        c2_trail) %>%
+  filter(gene_symbol %in% 
+           Features(Patient_18, 
+                    assay = "RNA"))
+trail_genes <-
+  split(x = trail_sets$gene_symbol, 
+        f = trail_sets$gs_name)
+Patient_18 <-
+    AddModuleScore(object = Patient_18,
+                   features = trail_genes,
+                   name = names(trail_genes))
+colnames(Patient_18@meta.data)[colnames(Patient_18@meta.data) %in% paste0(names(trail_genes),1:length(trail_genes))] <-
+  names(trail_genes)
+stats <- data.frame()
+for (celltype in levels(Patient_18$cluster_cell_type)){
+  for (pathway in names(trail_genes)){
+    pre <-
+      Patient_18@meta.data %>%
+      filter(cluster_cell_type == celltype &
+               timepoint == "Pre-oHSV") %>%
+      pull(!!sym(pathway))
+    post <-
+      Patient_18@meta.data %>%
+      filter(cluster_cell_type == celltype &
+               timepoint == "Post-oHSV") %>%
+      pull(!!sym(pathway))
+    pval <-
+      wilcox.test(x = pre,
+                  y = post)
+    stats <- 
+      rbind(stats, 
+            c(celltype, pathway, mean(pre), mean(post), pval$p.value))
+  }
+}
+colnames(stats) <-
+  c("cluster_cell_type","gene_set","pre-oHSV", "post-oHSV", "pval")
+stats$FDR <-
+  p.adjust(stats$pval, "BH")
+write.csv(stats,
+          paste0(fig, "flex/pt18_TRAIL_gene_signatures_heatmap.csv"),
+          row.names = F,
+          quote = F)
+summary <- 
+  Patient_18@meta.data %>%
+  dplyr::select(cluster_cell_type, timepoint, names(trail_genes)) %>%
+  pivot_longer(cols = !c(cluster_cell_type, timepoint),
+               names_to = "pathway",
+               values_to = "score") %>% 
+  group_by(cluster_cell_type, timepoint, pathway) %>%
+  summarize(mean_score = mean(score)) %>%
+  mutate(pathway = gsub("_", " ", pathway) %>%
+           str_wrap(width = 18)) %>%
+  as.data.frame()
+stats <-
+  read.csv(paste0(fig, "flex/pt18_TRAIL_gene_signatures_heatmap.csv")) %>%
+  mutate(sig = ifelse(FDR <= 0.05,"*","")) %>%
+  mutate(pathway = gsub("_", " ", gene_set) %>%
+           str_wrap(width = 18)) %>%
+  pivot_longer(cols = 3:4,
+               names_to = "timepoint",
+               values_to = "mean") %>%
+  mutate(score = ifelse(str_detect(string = timepoint,
+                                   pattern = "pre"),
+                          "Pre-oHSV",
+                          "Post-oHSV"),
+         timepoint = gsub("pre.oHSV", "Pre-oHSV", timepoint) %>%
+           gsub("post.oHSV", "Post-oHSV",.)) %>%
+    as.data.frame()
+test <-
+  merge(summary,
+        stats) %>%
+  mutate(sig = ifelse(timepoint == "Pre-oHSV", "", sig))
+test %>%
+  ggplot(aes(x = timepoint,
+             y = cluster_cell_type,
+             fill = mean_score)) +
+  facet_wrap(~pathway, 
+             nrow = 1) +
+  geom_tile() +
+  scale_y_discrete(expand = c(0,0)) +
+  scale_x_discrete(expand = c(0,0)) +
+  scale_fill_continuous(type = "viridis",
+                        name = "Mean Module Score") +
+  xlab("Timepoint") +
+  ylab("Cluster Cell Type") +
+  ggtitle("Patient 18 TRAIL Pathways") +
+  geom_text(aes(label = sig),
+              colour = "white",
+              size = 16/.pt,
+              vjust = 0.75,
+              hjust = 0.5) +
+  theme(plot.title = element_text(hjust = 0.5),
+        strip.background = element_rect(fill = "white",
+                                        color = "black"))
+ggsave(paste0(fig, "flex/pt18_TRAIL_gene_signatures_heatmap.jpeg"),
+       width = 14,
+       height = 6)
+
+Patient_18$cluster_cell_type_treatment <-
+  factor(Patient_18$cluster_cell_type_treatment,
+         levels = c("Cluster 0 OPC-like and NPC-like Pre-oHSV",
+                    "Cluster 0 OPC-like and NPC-like Post-oHSV",
+                    "Cluster 1 NPC-like Pre-oHSV",
+                    "Cluster 1 NPC-like Post-oHSV",
+                    "Cluster 2 Oligodendrocyte Pre-oHSV",
+                    "Cluster 2 Oligodendrocyte Post-oHSV",
+                    "Cluster 3 Monocyte and TAM-MG Pre-oHSV",
+                    "Cluster 3 Monocyte and TAM-MG Post-oHSV",
+                    "Cluster 4 OPC-like and NPC-like Pre-oHSV",
+                    "Cluster 4 OPC-like and NPC-like Post-oHSV",
+                    "Cluster 5 Unknown Pre-oHSV",
+                    "Cluster 5 Unknown Post-oHSV",
+                    "Cluster 6 OPC-like and NPC-like Pre-oHSV",
+                    "Cluster 6 OPC-like and NPC-like Post-oHSV",
+                    "Cluster 7 OPC-like and NPC-like Pre-oHSV",
+                    "Cluster 7 OPC-like and NPC-like Post-oHSV",
+                    "Cluster 8 AC-like Pre-oHSV",
+                    "Cluster 8 AC-like Post-oHSV",
+                    "Cluster 9 Astrocyte Pre-oHSV",
+                    "Cluster 9 Astrocyte Post-oHSV",
+                    "Cluster 10 Endothelial and Mural Pre-oHSV",
+                    "Cluster 10 Endothelial and Mural Post-oHSV",
+                    "Cluster 11 Oligodendrocyte Pre-oHSV",
+                    "Cluster 11 Oligodendrocyte Post-oHSV",
+                    "Cluster 12 CD8 Pre-oHSV",
+                    "Cluster 12 CD8 Post-oHSV"))
+saveRDS(object = Patient_18,
+        file = paste0(rdata, "pt18_flex_harmony_annotated.rds"))
+trail_genes <-
+  c("TNFSF10","IL11","IL11RA","STAT3","CXCL9","CXCL10","CXCL11","CD80","CD40","TNFRSF10B")
+DotPlot(object = Patient_18,
+        features = trail_genes,
+        group.by = "cluster_cell_type_treatment") &
+  scale_color_continuous(type = "viridis") &
+  scale_size_continuous(breaks = c(0,10,20,30,40))
+ggsave(paste0(fig, "flex/pt18_TRAIL_pathway_genes_dotplot.jpeg"),
+       width = 13,
+       height = 8)
+
+trail_degs <-
+  all_degs %>%
+  filter(gene %in% trail_genes)
+``` 
+
+```{r}
+# run GSEA analysis on degs for each cluster
+# set up gsea
+go <- 
+  msigdbr(species = "Homo sapiens",
+          category = "C5") %>% 
+  split(x = .$gene_symbol,
+        f = .$gs_name)
+hallmark <- 
+  msigdbr(species = "Homo sapiens",
+          category = "H") %>% 
+  split(x = .$gene_symbol,
+        f = .$gs_name)
+kegg <- 
+  msigdbr(species = "Homo sapiens",
+          category = "C2",
+          subcategory = "CP:KEGG") %>% 
+  split(x = .$gene_symbol,
+        f = .$gs_name)
+genesets <- 
+  c(go, hallmark, kegg)
+
+# read in degs
+all_degs <-
+  read.csv(paste0(de, "pt18_flex_post_vs_pre_oHSV_degs.csv"))
+
+gsea <-
+  data.frame()
+for (cl in unique(all_degs$cluster)){
+  ranks <-
+    all_degs %>%
+    filter(cluster == cl) %>%
+    filter(FDR <= 0.05) %>%
+    arrange(desc(avg_log2FC)) %>%
+    select(gene, avg_log2FC) %>%
+    deframe()
+  res <- 
+    fgseaMultilevel(genesets,
+                    ranks,
+                    minSize = 15,
+                    maxSize = 500) %>%
+    arrange(padj) %>%
+    mutate(cluster = cl,
+           direction = ifelse(NES < 0,
+                             "Up in Pre-oHSV",
+                             "Up in Post-oHSV"))
+  gsea <-
+    rbind(gsea,
+          res)
+  if (nrow(res) > 0) {
+    filename <- paste0(output, 
+                       "gsea/pt18_flex_post_vs_pre_oHSV_", cl, "_gsea")
+    fwrite(res, 
+           file = paste0(filename, ".csv"))
+    # make GSEA dotplot
+    tryCatch({
+      df <- 
+        res[res$padj <= 0.2,] %>%
+        slice_head(n = 20) %>%
+        mutate(abs_NES = abs(NES),
+               pathway = gsub("_", " ", pathway))
+      if (nrow(df) > 1) {
+        p <- 
+          df %>%
+          ggplot(aes(x = abs_NES,
+                     y = fct_reorder(pathway, abs_NES))) + 
+          geom_point(aes(size = size,
+                         color = padj)) +
+          scale_color_gradient2(high = "#f52668",
+                                mid = "grey80",
+                                low = "#1989a9",
+                                midpoint = 0.05) +
+          ylab(NULL) +
+          xlab("Absolute Value NES") +
+          scale_y_discrete(labels = function(x) str_wrap(x, width = 50)) +
+          ggtitle(paste0("Patient 18 Pre- vs. Post-oHSV GSEA\n", cl)) +
+          theme_bw(base_size = 11) +
+          theme(plot.title = element_text(hjust=0.5, face="bold"))
+        p + facet_grid(.~direction)
+        ggsave(filename = paste0(filename, ".jpeg"), 
+               width = 8, 
+               height = 8)
+      } else {
+        print(paste("no significant gsea for", cl))
+      }
+      }, error=function(e){
+          message(paste("no significant gsea for", cl))
+    })
+  } else {
+    print(paste("no gsea for", cl))
+  }
+}
+
+```
+
+```{r}
+# Look at expression of Viral Genome Replication pathway genes in each cell type
+c5_viral <-
+  msigdbr(species = "Homo sapiens",
+          category = "C5") %>%
+  dplyr::select(gs_name, gene_symbol) %>%
+  filter(str_detect(string = gs_name,
+                    pattern = "_VIRAL_"))
+viral_gs <- 
+  c5_viral %>% 
+  filter(gs_name %in% unique(c5_viral$gs_name)[c(1,4,6,11,17,20,24,25,32,33)]) %>%
+  filter(gene_symbol %in% 
+           Features(Patient_18, 
+                    assay = "RNA"))
+viral_genes <-
+  split(x = viral_gs$gene_symbol, 
+        f = viral_gs$gs_name)
+Patient_18 <-
+    AddModuleScore(object = Patient_18,
+                   features = viral_genes,
+                   name = names(viral_genes))
+colnames(Patient_18@meta.data)[colnames(Patient_18@meta.data) %in% paste0(names(viral_genes),1:length(viral_genes))] <-
+  names(viral_genes)
+stats <- data.frame()
+for (celltype in levels(Patient_18$cluster_cell_type)){
+  for (pathway in names(viral_genes)){
+    pre <-
+      Patient_18@meta.data %>%
+      filter(cluster_cell_type == celltype &
+               timepoint == "Pre-oHSV") %>%
+      pull(!!sym(pathway))
+    post <-
+      Patient_18@meta.data %>%
+      filter(cluster_cell_type == celltype &
+               timepoint == "Post-oHSV") %>%
+      pull(!!sym(pathway))
+    pval <-
+      wilcox.test(x = pre,
+                  y = post)
+    stats <- 
+      rbind(stats, 
+            c(celltype, pathway, mean(pre), mean(post), pval$p.value))
+  }
+}
+colnames(stats) <-
+  c("cluster_cell_type","gene_set","pre-oHSV", "post-oHSV", "pval")
+stats$FDR <-
+  p.adjust(stats$pval, "BH")
+write.csv(stats,
+          paste0(fig, "flex/pt18_viral_gene_signatures_heatmap_stats.csv"),
+          row.names = F,
+          quote = F)
+summary <- 
+  Patient_18@meta.data %>%
+  dplyr::select(cluster_cell_type, timepoint, names(viral_genes)) %>%
+  pivot_longer(cols = !c(cluster_cell_type, timepoint),
+               names_to = "pathway",
+               values_to = "score") %>% 
+  group_by(cluster_cell_type, timepoint, pathway) %>%
+  summarize(mean_score = mean(score)) %>%
+  mutate(pathway = gsub("_", " ", pathway) %>%
+           str_wrap(width = 18)) %>%
+  as.data.frame()
+stats <-
+  read.csv(paste0(fig, "flex/pt18_viral_gene_signatures_heatmap_stats.csv")) %>%
+  mutate(sig = ifelse(FDR <= 0.05,"*","")) %>%
+  mutate(pathway = gsub("_", " ", gene_set) %>%
+           str_wrap(width = 18)) %>%
+  pivot_longer(cols = 3:4,
+               names_to = "timepoint",
+               values_to = "mean") %>%
+  mutate(score = ifelse(str_detect(string = timepoint,
+                                   pattern = "pre"),
+                          "Pre-oHSV",
+                          "Post-oHSV"),
+         timepoint = gsub("pre.oHSV", "Pre-oHSV", timepoint) %>%
+           gsub("post.oHSV", "Post-oHSV",.)) %>%
+    as.data.frame()
+test <-
+  merge(summary,
+        stats) %>%
+  mutate(sig = ifelse(timepoint == "Pre-oHSV", "", sig))
+test %>%
+  ggplot(aes(x = timepoint,
+             y = cluster_cell_type,
+             fill = mean_score)) +
+  facet_wrap(~pathway, 
+             nrow = 1) +
+  geom_tile() +
+  scale_y_discrete(expand = c(0,0)) +
+  scale_x_discrete(expand = c(0,0)) +
+  scale_fill_continuous(type = "viridis",
+                        name = "Mean Module Score") +
+  xlab("Timepoint") +
+  ylab("Cluster Cell Type") +
+  ggtitle("Patient 18 Viral Pathways") +
+  geom_text(aes(label = sig),
+              colour = "white",
+              size = 16/.pt,
+              vjust = 0.75,
+              hjust = 0.5) +
+  theme(plot.title = element_text(hjust = 0.5),
+        strip.background = element_rect(fill = "white",
+                                        color = "black"))
+ggsave(paste0(fig, "flex/pt18_viral_gene_signatures_heatmap.jpeg"),
+       width = 20,
+       height = 7)
+
+VlnPlot(Patient_18, 
+        features = "GOBP_VIRAL_GENOME_REPLICATION", 
+        group.by = "cluster_cell_type") &
+  geom_hline(yintercept = mean(Patient_18$GOBP_VIRAL_GENOME_REPLICATION)) &
+  stat_summary(fun = "mean",
+                   geom = "crossbar",
+                   width = 0.3,
+                   position = position_dodge(width = 0.9),
+                   linewidth = 0.5,
+                   show.legend = F,
+                   color = "black") &
+  guides(fill = "none") &
+  xlab(NULL) &
+  theme(axis.text.x = element_text(angle = 90))
+ggsave(paste0(fig, "flex/pt18_viral_gene_signatures_violinplot.jpeg"),
+       width = 7,
+       height = 7)
+
+VlnPlot(Patient_18, 
+        features = c("ISG15","STAT1","OAS2","MX1","IFIT1"), 
+        group.by = "cluster_cell_type",
+        ncol = 2) &
+  stat_summary(fun = "mean",
+               geom = "crossbar",
+               width = 0.5,
+               position = position_dodge(width = 0.9),
+               linewidth = 0.7,
+               show.legend = F,
+               color = "black") &
+  guides(fill = "none") &
+  xlab(NULL) &
+  theme(axis.text.x = element_text(angle = 90))
+ggsave(paste0(fig, "flex/pt18_viral_genes_violinplots.jpeg"),
+       width = 10,
+       height = 15)
+```
+
+```{r}
+# Look at expression of Viral Genome Replication pathway genes in each cell type
+c5_viral <-
+  msigdbr(species = "Homo sapiens",
+          category = "C5") %>%
+  dplyr::select(gs_name, gene_symbol) %>%
+  filter(str_detect(string = gs_name,
+                    pattern = "_VIRAL_"))
+viral_gs <- 
+  c5_viral %>% 
+  filter(gs_name %in% unique(c5_viral$gs_name)[c(1,4,6,11,17,20,24,25,32,33)]) %>%
+  filter(gene_symbol %in% 
+           Features(Patient_18, 
+                    assay = "RNA"))
+viral_genes <-
+  split(x = viral_gs$gene_symbol, 
+        f = viral_gs$gs_name)
+Patient_22 <-
+    AddModuleScore(object = Patient_22,
+                   features = viral_genes,
+                   name = names(viral_genes))
+colnames(Patient_22@meta.data)[colnames(Patient_22@meta.data) %in% paste0(names(viral_genes),1:length(viral_genes))] <-
+  names(viral_genes)
+
+VlnPlot(Patient_22, 
+        features = "GOBP_VIRAL_GENOME_REPLICATION", 
+        group.by = "cluster_cell_type") &
+  geom_hline(yintercept = mean(Patient_22$GOBP_VIRAL_GENOME_REPLICATION)) &
+  stat_summary(fun = "mean",
+                   geom = "crossbar",
+                   width = 0.3,
+                   position = position_dodge(width = 0.9),
+                   linewidth = 0.5,
+                   show.legend = F,
+                   color = "black") &
+  guides(fill = "none") &
+  xlab(NULL) &
+  theme(axis.text.x = element_text(angle = 90))
+ggsave(paste0(fig, "flex/pt22_viral_gene_signatures_violinplot.jpeg"),
+       width = 7,
+       height = 7)
+
+
+VlnPlot(Patient_22, 
+        features = c("ISG15","STAT1","OAS2","MX1","IFIT1"), 
+        group.by = "cluster_cell_type",
+        ncol = 2) &
+  stat_summary(fun = "mean",
+               geom = "crossbar",
+               width = 0.5,
+               position = position_dodge(width = 0.9),
+               linewidth = 0.7,
+               show.legend = F,
+               color = "black") &
+  guides(fill = "none") &
+  xlab(NULL) &
+  theme(axis.text.x = element_text(angle = 90))
+ggsave(paste0(fig, "flex/pt22_viral_genes_violinplots.jpeg"),
+       width = 10,
+       height = 15)
+```
+
+
+
+
+
+

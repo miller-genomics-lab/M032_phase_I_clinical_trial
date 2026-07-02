@@ -1,0 +1,76 @@
+---
+title: "MO32 Analysis"
+author: "Corinne Strawser"
+date: "2026-02-06"
+output: html_document
+---
+
+# Project Outline
+
+The goal of project from Kevin Cassady's lab is to investigate the effect of M032, an Oncolytic Herpes Simplex Virus (oHSV) that expresses IL-12, on immune infiltration of tumors. Additionally, we will access if we are able to identify cells which were infected by M032.
+
+Patient       Sample 	                Section   Timepoint   Data
+Patient 18    NP-19-0036945_B1        B1 	      D0          /igm/projects/240320_GSL-KM-3829_KC_visium/count/count/B1/outs
+Patient 18    NP-20-0005714_F1 	      F1 	      D122        /igm/projects/240320_GSL-KM-3829_KC_visium/count/count/F1/outs
+Patient 22    NP-20-0025854_C1_Pre    C1        D0          /igm/projects/241014_GSL-LPRV-4138_Visium/counts/NP-20-0025854_C1_Pre/NP-20-0025854_C1_Pre/outs
+Patient 22    NP-20-0043174_D4_Post   D4        D119        /igm/projects/241014_GSL-LPRV-4138_Visium/counts/NP-20-0043174_D4_Post/NP-20-0043174_D4_Post/outs
+
+This pilot data was generated using CytAssist and Visium v2 slides with a human immune protein panel and custom viral probes
+
+# Load packages and set themes
+```{r lib}
+library(tidyverse)
+library(Seurat)
+library(clustree)
+library(harmony)
+library(spacexr)
+library(patchwork)
+library(msigdbr)
+library(ggpubr)
+library(fgsea)
+library(ggrepel)
+library(cowplot)
+library(clusterProfiler)
+library(SPOTlight)
+library(Banksy)
+
+dyn.load("/igm/apps/hdf5/hdf5-1.12.1/lib/libhdf5_hl.so.200")
+library("hdf5r")
+# read in custom scripts
+source("~/projects/ohsv/mo32/scripts/SpatialFeaturePlot_ohsv_gene.r")
+source("~/projects/ohsv/mo32/scripts/SpatialFeaturePlot_ohsv_norm_weight.r")
+source("~/projects/ohsv/mo32/scripts/SpatialDimPlot_ohsv.r")
+# Set random generator seed to facilitate reproducibility
+addTaskCallback(function(...) {set.seed(999);TRUE})
+# set colors
+colors <- 
+  c("#0166d8", "#ec102f", "#3aa609", "#6524ff", "#f8d147", "#5ce8ef", "#fd6ca0",
+    "#476ba5", "#fea27a", "#add465", "#b775e1", "#fe8f06", "#5cfdc4", "#feafda",
+    "#00228b", "#fd5925", "#166d2a", "#a90aa1", "#f3c011", "#5ac7dc", "#c1c2f5",
+    "#1f29a1", "#e13224", "#86ec5a", "#672396", "#e1c637", "#069668", "#fcb2c7",
+    "#1288da", "#c26a6b", "#6e9d50", "#1e0e76", "#fea53b", "#15729c", "#ffa8ff",
+    "#270fe2", "#8a1341", "#285d28", "#956bed", "#f79302", "#116966", "#d945c2",
+    "#94a6fd", "#e13219", "#01c472", "#afc6fe", "#e3c60b", "#aedfca", "#c2639f",
+    "#0e2450", "#6d1a44", "#91fc40", "#5858e1", "#fca283", "#1eefc9", "#fb2076", 
+    "#8bd0eb")
+rainbow <-
+  c('#5749a0','#0f7ab0','#00bbb1','#bef0b0','#fdf4af',
+    '#f9b64b','#ec840e','#ca443d','#a51a49')
+na <-
+  c('#5749a0')
+treatments <-
+  c("pre-oHSV" = "#476ba5",
+    "post-oHSV" = "#c26a6b")
+Treatments <-
+  c("Pre-oHSV" = "#476ba5",
+    "Post-oHSV" = "#c26a6b")
+# set directories
+output <- "~/projects/ohsv/mo32/manuscript_2026/output/"
+fig <- paste0(output, "figures/")
+rdata <- paste0(output, "rdata/")
+de <- paste0(output, "de/")
+```
+
+```{r sessionInfo}
+sessionInfo()
+```
